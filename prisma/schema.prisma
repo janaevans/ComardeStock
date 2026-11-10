@@ -1,0 +1,186 @@
+// Prisma schema — Multi-Agent Stock Analysis Platform
+// Database: PostgreSQL (Supabase in production)
+//
+// Notes
+// - `users.id` is the Supabase Auth user id (auth.users.id). We mirror the user
+//   into this table on first authenticated request so relations stay inside
+//   the application schema.
+// - Table and column names are snake_case in the database; models are
+//   PascalCase in JavaScript.
+// - The connection URL lives in prisma.config.mjs (Prisma 7 convention).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProviderType {
+  ANTHROPIC
+  OPENAI
+  TWELVE_DATA
+  ALPHA_VANTAGE
+}
+
+enum AnalysisStatus {
+  PENDING
+  FETCHING_DATA
+  CALCULATING
+  BULL_WORKING
+  BEAR_WORKING
+  DEBATING
+  JUDGE_REVIEWING
+  GENERATING_REPORT
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentType {
+  BULL
+  BEAR
+  JUDGE
+  SYSTEM
+}
+
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  providerConfigurations ProviderConfiguration[]
+  analyses               Analysis[]
+  watchlist              WatchlistItem[]
+  marketSnapshots        MarketSnapshot[]
+
+  @@map("users")
+}
+
+model ProviderConfiguration {
+  id              String       @id @default(uuid()) @db.Uuid
+  userId          String       @map("user_id") @db.Uuid
+  provider        ProviderType
+  encryptedApiKey String       @map("encrypted_api_key")
+  keyHint         String       @map("key_hint") // last 4 characters only, for display
+  selectedModel   String?      @map("selected_model")
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("provider_configurations")
+}
+
+model Analysis {
+  id               String         @id @default(uuid()) @db.Uuid
+  userId           String         @map("user_id") @db.Uuid
+  companyName      String         @map("company_name")
+  ticker           String
+  exchange         String
+  currency         String?
+  status           AnalysisStatus @default(PENDING)
+  analysisSettings Json           @default("{}") @map("analysis_settings")
+  errorMessage     String?        @map("error_message")
+  isSaved          Boolean        @default(false) @map("is_saved")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  completedAt      DateTime?      @map("completed_at") @db.Timestamptz(3)
+
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages              AgentMessage[]
+  marketSnapshots       MarketSnapshot[]
+  financialCalculations FinancialCalculation[]
+  finalReport           FinalReport?
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, ticker, exchange])
+  @@index([status])
+  @@map("analyses")
+}
+
+model AgentMessage {
+  id             String    @id @default(uuid()) @db.Uuid
+  analysisId     String    @map("analysis_id") @db.Uuid
+  sequence       Int // strictly increasing order within one analysis
+  agentType      AgentType @map("agent_type")
+  provider       String?
+  model          String?
+  roundNumber    Int       @map("round_number")
+  messageType    String    @map("message_type")
+  content        String
+  structuredJson Json?     @map("structured_json")
+  evidenceJson   Json      @default("[]") @map("evidence_json")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@unique([analysisId, sequence])
+  @@index([analysisId, roundNumber])
+  @@map("agent_messages")
+}
+
+model MarketSnapshot {
+  id              String   @id @default(uuid()) @db.Uuid
+  analysisId      String?  @map("analysis_id") @db.Uuid
+  userId          String?  @map("user_id") @db.Uuid
+  provider        String
+  symbol          String
+  exchange        String
+  dataKind        String   @map("data_kind") // quote | ohlcv | fundamentals | profile
+  sourceTimestamp DateTime? @map("source_timestamp") @db.Timestamptz(3)
+  retrievedAt     DateTime @default(now()) @map("retrieved_at") @db.Timestamptz(3)
+  marketDataJson  Json     @map("market_data_json")
+
+  analysis Analysis? @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId])
+  @@index([symbol, exchange, dataKind, retrievedAt(sort: Desc)])
+  @@map("market_snapshots")
+}
+
+model FinancialCalculation {
+  id              String   @id @default(uuid()) @db.Uuid
+  analysisId      String   @map("analysis_id") @db.Uuid
+  indicatorType   String   @map("indicator_type")
+  calculationJson Json     @map("calculation_json")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId, indicatorType])
+  @@map("financial_calculations")
+}
+
+model FinalReport {
+  id              String   @id @default(uuid()) @db.Uuid
+  analysisId      String   @unique @map("analysis_id") @db.Uuid
+  judgeResultJson Json     @map("judge_result_json")
+  markdownContent String   @map("markdown_content")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("final_reports")
+}
+
+model WatchlistItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  symbol      String
+  exchange    String
+  companyName String   @map("company_name")
+  currency    String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, symbol, exchange])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("watchlist_items")
+}
